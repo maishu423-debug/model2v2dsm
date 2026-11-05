@@ -14,6 +14,8 @@ from weather.asos_client import fetch_recent_observations
 from weather.asos_nowcast import STATUS_UNAVAILABLE, freshness_status, todays_high
 from weather.asos_parser import parse_utc
 
+from .nws import apply_dsm_floor
+
 POLL_INTERVAL = 60
 
 _lock = threading.Lock()
@@ -35,7 +37,8 @@ def fetch_current_high():
     age = max(0.0, (now - parse_utc(latest["observed_at"])).total_seconds())
     return {
         "t0_f": latest["temp_f"],
-        "today_high_f": todays_high(observations, now)["high_f"],
+        # HFMETAR high, raised to today's DSM high when that is higher (nws.apply_dsm_floor)
+        "today_high_f": apply_dsm_floor(todays_high(observations, now)["high_f"], now),
         "observed_at": latest["observed_at"],
         "source": wcfg.SOURCE_ID,
         "status": freshness_status(age),

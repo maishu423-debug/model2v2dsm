@@ -145,19 +145,18 @@ def weather_source_report(request):
     return HttpResponse(tool.render_html(report), content_type="text/html; charset=utf-8")
 
 
-def _nws_response(loader, what):
+@require_GET
+def nws_dsm(_request):
+    """
+    KMIA ASOS Daily Summary Message (latest + last final), decoded, with the raw text, plus `floor`: whether the
+    DSM high is currently being used as today's high (it is, when higher than the HFMETAR high).
+    """
     from . import nws
 
     try:
-        return JsonResponse(getattr(nws, loader)())
+        return JsonResponse({**nws.get_dsm(), "floor": nws.last_floor_decision()})
     except Exception as exc:     # network/parse failure with nothing cached yet
-        return JsonResponse({"error": f"Could not load {what}: {type(exc).__name__}"}, status=502)
-
-
-@require_GET
-def nws_dsm(_request):
-    """KMIA ASOS Daily Summary Message (latest + last final), decoded, with the raw text. Display only."""
-    return _nws_response("get_dsm", "the NWS daily summary (DSM)")
+        return JsonResponse({"error": f"Could not load the NWS daily summary (DSM): {type(exc).__name__}"}, status=502)
 
 
 @require_GET

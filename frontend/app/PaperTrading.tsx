@@ -413,7 +413,7 @@ export default function PaperTrading({
       <div className="pt-scroll">
         {tab === "positions" && (
           rows.length === 0 ? (
-            <p className="algo-hint">No positions yet — the bot places its first trades at 11:30 AM ET.</p>
+            <p className="algo-hint">No positions yet — the bot places its first trades at 12:30 PM ET.</p>
           ) : (
             <table className="ev-table">
               <thead>

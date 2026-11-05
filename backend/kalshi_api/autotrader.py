@@ -1,7 +1,7 @@
 """
 Auto-trading bot.
 
-Every 15 minutes between 11:30 AM and 3:30 PM ET (inclusive) it reads the latest model forecast and today's
+Every 15 minutes between 12:30 PM and 3:30 PM ET (inclusive) it reads the latest model forecast and today's
 Kalshi bracket ladder and buys CONTRACTS_PER_TRADE contracts of EVERY leg of the model's rule, with no
 comparison against Kalshi's prices (see algorithm.get_recommendation):
   * YES on the highest-probability live bracket, and
@@ -34,7 +34,7 @@ ET = ZoneInfo("America/New_York")
 
 CONTRACTS_PER_TRADE = 100   # per leg, per cycle
 INTERVAL_MINUTES = 15
-WINDOW_START = (11, 30)
+WINDOW_START = (12, 30)
 WINDOW_END = (15, 30)
 SLOT_GRACE_SEC = 5 * 60          # a cycle may start up to 5 min after its slot
 MAX_FORECAST_AGE_SEC = 15 * 60   # skip the cycle if the model forecast is older than this

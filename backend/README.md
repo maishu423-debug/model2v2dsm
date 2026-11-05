@@ -45,7 +45,7 @@ Do not put Kalshi credentials in the frontend.
 ## Paper-trading bot
 
 Started with the other background tasks (`RUN_BACKGROUND_TASKS`, single worker). Every 15 minutes
-from 11:30 AM to 3:30 PM ET it buys 100 contracts of YES on the highest-probability live bucket and
+from 12:30 PM to 3:30 PM ET it buys 100 contracts of YES on the highest-probability live bucket and
 100 contracts of NO on every other live bucket (`kalshi_api/algorithm.py`, `kalshi_api/autotrader.py`).
 It does not compare the model with Kalshi's prices; they are only the fill price (a leg is skipped if it
 has no ask or the ask is above 98¢). It never sells; positions settle from Kalshi's resolved result.

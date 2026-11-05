@@ -31,6 +31,8 @@ type DsmPayload = {
   stale?: boolean;
   error?: string;
   note?: string;
+  // whether the DSM high is currently raising the high the models use (only when it is higher than HFMETAR's)
+  floor?: { used: boolean; reason: string; dsm_high_f?: number; hfmetar_high_f?: number };
 };
 
 const ET = "America/New_York";
@@ -192,6 +194,11 @@ function DsmCard() {
           {data.latest ? `Newest DSM issued ${agoText(ageMinutes(data.latest.issued_at, now))}` : "No DSM yet"}
           {data.fetched_at ? ` · checked ${etClock(data.fetched_at)} ET` : ""}
           {" · DSMs are issued irregularly"}
+        </p>
+      )}
+      {data?.floor && (
+        <p className={`nws-floor ${data.floor.used ? "nws-floor--on" : ""}`}>
+          {data.floor.used ? "Model high: using the DSM high" : "Model high: using HFMETAR"} — {data.floor.reason}
         </p>
       )}
       {data && <p className="nws-foot">{data.note ?? "DSM times are local standard time (LST), with no daylight saving."}</p>}
