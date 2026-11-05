@@ -31,8 +31,8 @@ type DsmPayload = {
   stale?: boolean;
   error?: string;
   note?: string;
-  // whether the DSM high is currently raising the high the models use (only when it is higher than HFMETAR's)
-  floor?: { used: boolean; reason: string; dsm_high_f?: number; hfmetar_high_f?: number };
+  // the high the models are currently using, and why (NOAA 5-minute range, raised by NWS hourly / DSM when higher)
+  floor?: { used: boolean; reason: string; effective_high_f?: number; source?: string };
 };
 
 const ET = "America/New_York";
@@ -198,7 +198,7 @@ function DsmCard() {
       )}
       {data?.floor && (
         <p className={`nws-floor ${data.floor.used ? "nws-floor--on" : ""}`}>
-          {data.floor.used ? "Model high: using the DSM high" : "Model high: using HFMETAR"} — {data.floor.reason}
+          Model high: {data.floor.effective_high_f != null ? `${data.floor.effective_high_f}°F` : "—"} — {data.floor.reason}
         </p>
       )}
       {data && <p className="nws-foot">{data.note ?? "DSM times are local standard time (LST), with no daylight saving."}</p>}

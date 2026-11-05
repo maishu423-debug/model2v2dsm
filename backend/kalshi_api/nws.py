@@ -1,7 +1,8 @@
 """
-NWS Daily Summary Message (DSM) for KMIA. It is shown on the page, and it has ONE effect on the models:
-apply_dsm_floor() raises today's recorded high to the DSM high when the DSM high is higher than the HFMETAR high
-(see its docstring for the guards). Nothing else from the DSM reaches the forecast or the trading rule.
+NWS data for KMIA: the Daily Summary Message (DSM) and NWS observations. They are shown on the page, and they have
+ONE effect on the models: resolve_known_high() works out the best provable lower bound for today's high from the NOAA
+5-minute feed (whole degrees C, so only known to within 1-2 F), the NWS hourly reports (tenths of a degree C, so exact)
+and the DSM (exact). See its docstring for the rules and guards.
 
   * DSM         the ASOS Daily Summary Message for Miami (product DSMMIA). NWS's own API (api.weather.gov) has no
                 Miami DSM, so it is read from the Iowa Mesonet's mirror of the NWS text stream.
@@ -27,9 +28,12 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from weather.asos_resolution import lower_bound_whole_f, possible_whole_f
+
 STATION = "KMIA"
 DSM_PIL = "DSMMIA"
 IEM_BASE = "https://mesonet.agron.iastate.edu"
+NWS_BASE = "https://api.weather.gov"
 USER_AGENT = "kalshi-trading-bot/1.0"
 HTTP_TIMEOUT_SEC = 15
 
@@ -39,7 +43,9 @@ DSM_TTL_SEC = 30
 DSM_LOOKBACK_PRODUCTS = 6      # newest products inspected when looking for the latest and the last final summary
 LST = timezone(timedelta(hours=-5), "LST")   # fixed offset: ASOS local standard time, never daylight saving
 ET = ZoneInfo("America/New_York")
-DSM_MAX_EXCESS_F = 4.0         # a DSM high more than this above the HFMETAR high is treated as a bad message
+DSM_MAX_EXCESS_F = 4.0         # an extra bound more than this above the HFMETAR high is treated as bad data
+NWS_READINGS_TTL_SEC = 30
+NWS_READINGS_HOURS = 26
 FLOOR_FAILURE_BACKOFF_SEC = 60  # after a failed DSM lookup, don't try again for this long (never slow the pollers)
 
 
@@ -236,41 +242,48 @@ def get_dsm():
     return _cached("dsm", DSM_TTL_SEC, _load_dsm)
 
 
-# ── daily-high floor (the DSM's one effect on the models) ─────────────────────
+# ── today's high: the best lower bound we can prove ───────────────────────────
 
-_floor_fail_until = 0.0
+_dsm_fail_until = 0.0
+_nws_fail_until = 0.0
 _decision_lock = threading.Lock()
 _decision = {"used": False, "reason": "not evaluated yet"}
 _decision_logged = None
 
 
 def last_floor_decision():
-    """The most recent apply_dsm_floor() outcome, for display (a copy)."""
+    """The most recent resolve_known_high() outcome, for display (a copy)."""
     with _decision_lock:
         return dict(_decision)
 
 
-def _record(used, reason, **fields):
+def _record(raised, reason, **fields):
     global _decision_logged
-    entry = {"used": used, "reason": reason, "evaluated_at": datetime.now(timezone.utc).isoformat(), **fields}
+    entry = {"used": raised, "reason": reason, "evaluated_at": datetime.now(timezone.utc).isoformat(), **fields}
+    key = (fields.get("source"), fields.get("effective_high_f"))
     with _decision_lock:
         _decision.clear()
         _decision.update(entry)
-        changed = (used, reason) != _decision_logged
-        _decision_logged = (used, reason)
-    if changed:                                     # log transitions only, not every poll
-        print(f"[dsm-floor] {'USING' if used else 'not using'} DSM high: {reason}", flush=True)
+        changed = key != _decision_logged
+        _decision_logged = key
+    if changed:                                     # log changes only, not every poll
+        print(f"[known-high] {reason}", flush=True)
+
+
+def _day_start(now, tz):
+    local = now.astimezone(tz)
+    return datetime(local.year, local.month, local.day, tzinfo=tz).astimezone(timezone.utc)
 
 
 def _todays_dsm_high(now):
     """(entry, reason): the newest DSM if it is for TODAY'S climate day, else (None, why not). Never raises."""
-    global _floor_fail_until
-    if time.monotonic() < _floor_fail_until:
+    global _dsm_fail_until
+    if time.monotonic() < _dsm_fail_until:
         return None, "DSM source unavailable (retrying shortly)"
     try:
         data = get_dsm()
     except Exception:
-        _floor_fail_until = time.monotonic() + FLOOR_FAILURE_BACKOFF_SEC
+        _dsm_fail_until = time.monotonic() + FLOOR_FAILURE_BACKOFF_SEC
         return None, "DSM source unavailable"
     latest = (data or {}).get("latest")
     if not latest or latest.get("high_f") is None:
@@ -283,39 +296,105 @@ def _todays_dsm_high(now):
     return latest, "ok"
 
 
-def apply_dsm_floor(hfmetar_high_f, now=None):
-    """
-    Today's high to use: the DSM high when it is HIGHER than the HFMETAR high, otherwise the HFMETAR high unchanged.
+def _load_nws_readings(now=None):
+    now = now or datetime.now(timezone.utc)
+    start = (now - timedelta(hours=NWS_READINGS_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = _get(f"{NWS_BASE}/stations/{STATION}/observations", params={"start": start, "limit": 500},
+                   headers={"Accept": "application/geo+json"}).json()
+    rows = []
+    for feature in (payload or {}).get("features", []):
+        p = feature.get("properties") or {}
+        try:
+            when = datetime.fromisoformat(p["timestamp"]).astimezone(timezone.utc)
+            celsius = float((p.get("temperature") or {}).get("value"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append((when, celsius))
+    return {"readings": rows, "fetched_at": now.isoformat(), "stale": False}
 
-      * The HFMETAR feed reports whole degrees C, so its high can sit up to ~1F below the true whole-degree-F high
-        that ASOS records and the DSM carries. A day's high only goes up, so a DSM high from earlier today is a
-        valid lower bound whenever it was published.
-      * A DSM that is not higher is ignored (the HFMETAR value is returned as it is).
-      * Guards: the DSM must be for today's climate day (see _todays_dsm_high); a DSM more than DSM_MAX_EXCESS_F
-        above the HFMETAR high is rejected as implausible; any failure falls back to the HFMETAR high. Never raises.
+
+def _nws_high_today(now):
+    """
+    (whole-F lower bound of today's high from the NWS readings, reason). Hourly and special reports carry tenths of a
+    degree C, which fixes the F value exactly (29.4C = 85F); the 5-minute rows are whole C and only give their lowest
+    possible F value. Only readings from today's climate day count. Never raises.
+    """
+    global _nws_fail_until
+    if time.monotonic() < _nws_fail_until:
+        return None, "NWS readings unavailable (retrying shortly)"
+    try:
+        data = _cached("nws_readings", NWS_READINGS_TTL_SEC, _load_nws_readings)
+    except Exception:
+        _nws_fail_until = time.monotonic() + FLOOR_FAILURE_BACKOFF_SEC
+        return None, "NWS readings unavailable"
+    start = max(_day_start(now, LST), _day_start(now, ET))
+    best = None
+    for when, celsius in data.get("readings", []):
+        if when < start or when > now + timedelta(minutes=5):
+            continue
+        low = lower_bound_whole_f(celsius * 9.0 / 5.0 + 32.0)
+        best = low if best is None else max(best, low)
+    return best, ("ok" if best is not None else "no NWS readings yet today")
+
+
+def resolve_known_high(hfmetar_high_f, now=None):
+    """
+    Today's high to use, in whole degrees F (a LOWER bound: the highest value we can prove).
+
+      * The NOAA 5-minute feed reports whole degrees C, so its high only narrows the true high to one or two whole-F
+        values (84.2F means 84 or 85). Start from the lowest, so a bucket that is still alive is never marked dead.
+      * The NWS hourly reports (tenths of a degree C: exact) and today's DSM (exact) are each a proven lower bound,
+        because a day's high only goes up. When one is higher, use it.
+      * Guards: a DSM must be for today's climate day; a bound more than DSM_MAX_EXCESS_F above the HFMETAR high is
+        rejected as bad data; if a source fails it is simply left out. Never raises: on any error the HFMETAR value
+        is returned unchanged.
     """
     try:
         if hfmetar_high_f is None:
-            _record(False, "no HFMETAR high yet")
-            return hfmetar_high_f
+            _record(False, "no HFMETAR high yet", source="none")
+            return None
         now = now or datetime.now(timezone.utc)
-        entry, why = _todays_dsm_high(now)
-        info = {"hfmetar_high_f": hfmetar_high_f, "effective_high_f": hfmetar_high_f}
-        if entry is None:
-            _record(False, why, **info)
-            return hfmetar_high_f
-        dsm = float(entry["high_f"])
-        info.update(dsm_high_f=entry["high_f"], dsm_issued_at=entry.get("issued_at"),
-                    dsm_report_time_lst=entry.get("report_time_lst"))
-        if dsm <= hfmetar_high_f:
-            _record(False, f"DSM high {entry['high_f']}F is not higher than HFMETAR {hfmetar_high_f}F", **info)
-            return hfmetar_high_f
-        if dsm - hfmetar_high_f > DSM_MAX_EXCESS_F:
-            _record(False, f"DSM high {entry['high_f']}F is implausibly far above HFMETAR {hfmetar_high_f}F (ignored)", **info)
-            return hfmetar_high_f
-        info["effective_high_f"] = dsm
-        _record(True, f"DSM high {entry['high_f']}F is higher than HFMETAR {hfmetar_high_f}F", **info)
-        return dsm
-    except Exception as exc:                        # the floor must never break the weather pipeline
-        _record(False, f"error: {type(exc).__name__}")
+        possible = possible_whole_f(hfmetar_high_f)
+        low, high = min(possible), max(possible)
+        best, source = float(low), "hfmetar"
+        info = {"hfmetar_high_f": hfmetar_high_f, "hfmetar_possible_f": [low, high]}
+        notes = []
+
+        nws_high, nws_why = _nws_high_today(now)
+        dsm_entry, dsm_why = _todays_dsm_high(now)
+        bounds = []
+        if nws_high is not None:
+            info["nws_high_f"] = nws_high
+            bounds.append(("nws_hourly", float(nws_high), f"NWS report {nws_high}F"))
+        else:
+            notes.append(nws_why)
+        if dsm_entry is not None:
+            info.update(dsm_high_f=dsm_entry["high_f"], dsm_issued_at=dsm_entry.get("issued_at"),
+                        dsm_report_time_lst=dsm_entry.get("report_time_lst"))
+            bounds.append(("dsm", float(dsm_entry["high_f"]), f"DSM {dsm_entry['high_f']}F"))
+        else:
+            notes.append(dsm_why)
+
+        for name, value, label in bounds:
+            if value - hfmetar_high_f > DSM_MAX_EXCESS_F:
+                notes.append(f"{label} is implausibly far above HFMETAR {hfmetar_high_f}F (ignored)")
+            elif value > best:
+                best, source = value, name
+
+        range_txt = f"{low}F" if low == high else f"{low} or {high}F"
+        if source == "hfmetar":
+            reason = (f"NOAA 5-minute feed {hfmetar_high_f}F = {range_txt}; using {int(best)}F"
+                      if low != high else f"NOAA 5-minute feed {hfmetar_high_f}F is exactly {int(best)}F")
+            if bounds:
+                reason += f" ({', '.join(lbl for _, _, lbl in bounds)}: not higher)"
+        else:
+            label = {"nws_hourly": "NWS hourly report", "dsm": "DSM"}[source]
+            reason = f"{label} shows {int(best)}F; NOAA 5-minute feed only shows {hfmetar_high_f}F ({range_txt})"
+        if notes:
+            reason += " - " + "; ".join(notes)
+        info["effective_high_f"] = best
+        _record(best > low, reason, source=source, **info)
+        return best
+    except Exception as exc:                        # this must never break the weather pipeline
+        _record(False, f"error: {type(exc).__name__}", source="error")
         return hfmetar_high_f

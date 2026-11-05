@@ -15,7 +15,7 @@ GET /api/kalshi/health/
 GET /api/kalshi/miami-temperature/
 GET /api/kalshi/miami-temperature/?market_ticker=KXHIGHMIA-26JUN15-B93.5
 GET /api/kalshi/miami-temperature/stream/
-GET /api/kalshi/nws/dsm/            (KMIA ASOS Daily Summary Message, decoded + raw; display only)
+GET /api/kalshi/nws/dsm/            (KMIA ASOS Daily Summary Message, decoded + raw, plus the high the models are using)
 GET /api/kalshi/paper/state/
 POST /api/kalshi/paper/order/
 POST /api/kalshi/paper/reset/

@@ -73,10 +73,21 @@ GOOGLE_TRADES_SHEET_ID=
 
 The Google service-account email must have access to the selected sheets.
 
-### NWS Daily Summary (DSM) card on the page (display only)
+### Today's high: NOAA 5-minute feed, NWS hourly reports and the DSM
 
-The "NWS Daily Summary (DSM)" card never feeds the forecast or the bot. The DSM is read from the Iowa Mesonet's
-mirror of the NWS text stream (product `DSMMIA`), because NWS's own API has no Miami DSM. No token is needed.
+The NOAA 5-minute feed (HFMETAR, from the LDM or the public files) reports temperatures in whole degrees C, so its
+daily high only narrows the true whole-degree-F high to one or two values (84.2F means 84 or 85F). The bot therefore
+uses the **highest value it can prove** as today's high (`kalshi_api/nws.py: resolve_known_high`):
+
+1. the NOAA 5-minute high as a range, starting from its lowest value (so a live bucket is never marked dead);
+2. raised to the highest **NWS hourly/special report** of the day (`api.weather.gov`, tenths of a degree C, exact);
+3. raised to today's **DSM** high (the Miami ASOS daily summary, read from the Iowa Mesonet mirror of the NWS text
+   stream, because NWS's own API has no Miami DSM; exact).
+
+Guards: the DSM must be for today's climate day (local standard time); a bound more than 4F above the NOAA high is
+ignored as bad data; if the NWS API or the DSM source is down it is simply left out and the NOAA range is used. No token
+is needed. The "NWS Daily Summary (DSM)" card on the page shows the DSM and, under it, the high the models are using
+and why.
 
 ### Live weather source: private NOAA MADIS LDM API
 
