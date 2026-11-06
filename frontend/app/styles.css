@@ -1852,3 +1852,8 @@ h1 {
   color: #0b6b4d;
   font-weight: 600;
 }
+
+.algo-temp-raw {
+  font-weight: 500;
+  opacity: 0.85;
+}
